@@ -1,0 +1,60 @@
+{
+  "name": "@genoventures-labs/pitstop",
+  "version": "0.1.0",
+  "description": "Scan codebase for obvious and uncaught bugs using Modelhitch model rotation, then output a structured handoff for the next agent.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "pitstop": "./dist/cli.js",
+    "Pitstop": "./dist/cli.js"
+  },
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "start": "node dist/cli.js",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "pitstop",
+    "code-audit",
+    "bug-finder",
+    "modelhitch",
+    "llm",
+    "agent-handoff",
+    "ai-agent",
+    "cli"
+  ],
+  "author": "bobbybacklogs",
+  "license": "MIT",
+  "dependencies": {
+    "commander": "^13.1.0",
+    "modelhitch": "^0.15.0",
+    "picocolors": "^1.1.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.0",
+    "tsup": "^8.3.6",
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.5"
+  }
+}
