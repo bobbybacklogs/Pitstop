@@ -10,6 +10,9 @@
     "pitstop": "./dist/cli.js",
     "Pitstop": "./dist/cli.js"
   },
+  "publishConfig": {
+    "access": "public"
+  },
   "exports": {
     ".": {
       "import": {
@@ -25,15 +28,25 @@
   "files": [
     "dist",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "repo_assets"
   ],
   "scripts": {
     "build": "tsup",
     "dev": "tsup --watch",
     "start": "node dist/cli.js",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "prepack": "npm run build && npm test"
   },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bobbybacklogs/Pitstop.git"
+  },
+  "bugs": {
+    "url": "https://github.com/bobbybacklogs/Pitstop/issues"
+  },
+  "homepage": "https://github.com/bobbybacklogs/Pitstop#readme",
   "keywords": [
     "pitstop",
     "code-audit",

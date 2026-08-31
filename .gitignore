@@ -141,3 +141,4 @@ pitstop-handoff.md
 pitstop-handoff.json
 test-handoff-output.md
 dist/
+*.tgz
