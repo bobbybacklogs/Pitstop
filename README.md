@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="./repo_assets/lockup.png" alt="Pitstop" width="800" />
+  <img src="./repo_assets/lockup.png" alt="Pitstop" width="600" />
 </p>
 
 <p align="center">
