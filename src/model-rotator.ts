@@ -3,8 +3,14 @@ import {
   MemoryKeyStore,
   readConfigFile,
   defaultProviders,
+  DEFAULT_FAILOVER_LANES,
+  VERCEL_AI_GATEWAY_DEFAULT_MODEL,
+  isMaskedSecret,
+  isModelHitchError,
   type FailoverEvent,
   type ContentPart,
+  type ModelHitchConfig,
+  type Policy,
 } from 'modelhitch';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -26,18 +32,15 @@ export interface AuditRunOptions {
   onProgress?: (message: string) => void;
 }
 
+/** Default coding lanes aligned with ModelHitch V2 (Vercel AI Gateway first). */
 export const DEFAULT_CODING_MODELS: ModelLane[] = [
-  { providerId: 'deepseek', model: 'deepseek-v4-flash' },
-  { providerId: 'opencode-zen', model: 'big-pickle' },
-  { providerId: 'opencode-zen', model: 'nemotron-3.5-lightning-free' },
-  { providerId: 'openrouter', model: 'nvidia/nemotron-3.5-lightning:free' },
-  { providerId: 'opencode-zen', model: 'north-mini-code-free' },
+  { providerId: 'vercel-ai-gateway', model: VERCEL_AI_GATEWAY_DEFAULT_MODEL },
+  ...DEFAULT_FAILOVER_LANES,
 ];
 
-const ENV_KEY_MAP: Record<string, string> = {
+const ENV_KEY_MAP: Record<string, string | string[]> = {
+  'vercel-ai-gateway': ['AI_GATEWAY_API_KEY', 'VERCEL_OIDC_TOKEN', 'VERCEL_TOKEN'],
   deepseek: 'DEEPSEEK_API_KEY',
-  'opencode-zen': 'OPENCODE_API_KEY',
-  'opencode-go': 'OPENCODE_API_KEY',
   openrouter: 'OPENROUTER_API_KEY',
   openai: 'OPENAI_API_KEY',
   anthropic: 'ANTHROPIC_API_KEY',
@@ -46,7 +49,9 @@ const ENV_KEY_MAP: Record<string, string> = {
   together: 'TOGETHER_API_KEY',
   xai: 'XAI_API_KEY',
   mistral: 'MISTRAL_API_KEY',
-  huggingface: 'HUGGINGFACE_API_KEY',
+  huggingface: ['HF_TOKEN', 'HUGGINGFACE_API_KEY'],
+  moonshot: 'MOONSHOT_API_KEY',
+  zai: 'ZAI_API_KEY',
 };
 
 export function getModelhitchConfigPath(): string {
@@ -60,8 +65,8 @@ export function extractTextContent(content: string | ContentPart[] | undefined):
   if (Array.isArray(content)) {
     return content
       .map((part) => {
-        if ('text' in part && typeof (part as any).text === 'string') {
-          return (part as any).text;
+        if (part.type === 'text' && typeof part.text === 'string') {
+          return part.text;
         }
         return '';
       })
@@ -70,27 +75,39 @@ export function extractTextContent(content: string | ContentPart[] | undefined):
   return '';
 }
 
+function readModelhitchConfig(): ModelHitchConfig | null {
+  try {
+    return readConfigFile(getModelhitchConfigPath());
+  } catch {
+    return null;
+  }
+}
+
+function firstEnvValue(envVars: string | string[]): string | undefined {
+  const names = Array.isArray(envVars) ? envVars : [envVars];
+  for (const name of names) {
+    const value = process.env[name];
+    if (value) return value;
+  }
+  return undefined;
+}
+
 export function resolveAvailableKeys(): Record<string, string> {
   const keys: Record<string, string> = {};
 
   // 1. Read from ~/.modelhitch/config.json if present
-  try {
-    const configPath = getModelhitchConfigPath();
-    const config = readConfigFile(configPath);
-    if (config?.keys) {
-      for (const [provider, key] of Object.entries(config.keys)) {
-        if (key && typeof key === 'string' && !key.includes('***')) {
-          keys[provider] = key;
-        }
+  const config = readModelhitchConfig();
+  if (config?.keys) {
+    for (const [provider, key] of Object.entries(config.keys)) {
+      if (key && typeof key === 'string' && !isMaskedSecret(key)) {
+        keys[provider] = key;
       }
     }
-  } catch {
-    // Ignore file read error
   }
 
   // 2. Read from process.env (overrides file keys)
   for (const [provider, envVar] of Object.entries(ENV_KEY_MAP)) {
-    const envVal = process.env[envVar];
+    const envVal = firstEnvValue(envVar);
     if (envVal) {
       keys[provider] = envVal;
     }
@@ -108,9 +125,28 @@ export function parseModelLane(raw: string): ModelLane {
     };
   }
   return {
-    providerId: 'opencode-zen',
+    providerId: 'vercel-ai-gateway',
     model: raw.trim(),
   };
+}
+
+function lanesFromPolicy(policy: Policy): ModelLane[] {
+  const lanes: ModelLane[] = [];
+  const providersById = new Map(defaultProviders.map((p) => [p.id, p] as const));
+  const pushEntry = (entry: { providerId: string; models?: string[] }) => {
+    const provider = providersById.get(entry.providerId);
+    const models =
+      entry.models && entry.models.length > 0
+        ? entry.models
+        : [provider?.defaultModel ?? VERCEL_AI_GATEWAY_DEFAULT_MODEL];
+    for (const model of models) {
+      lanes.push({ providerId: entry.providerId, model });
+    }
+  };
+
+  for (const entry of policy.trusted ?? []) pushEntry(entry);
+  for (const entry of policy.fallback ?? []) pushEntry(entry);
+  return lanes;
 }
 
 export function resolveModelLanes(options: { models?: string[] } = {}): ModelLane[] {
@@ -118,28 +154,27 @@ export function resolveModelLanes(options: { models?: string[] } = {}): ModelLan
     return options.models.map(parseModelLane);
   }
 
-  // Check config policy
-  try {
-    const configPath = getModelhitchConfigPath();
-    const config = readConfigFile(configPath);
-    const lanes: ModelLane[] = [];
-    if (config?.policy?.trusted && Array.isArray(config.policy.trusted)) {
-      for (const entry of config.policy.trusted) {
-        const providerId = entry.providerId;
-        const models = entry.models && entry.models.length > 0 ? entry.models : ['default'];
-        for (const m of models) {
-          lanes.push({ providerId, model: m });
-        }
-      }
-    }
+  const config = readModelhitchConfig();
+  if (config?.policy) {
+    const lanes = lanesFromPolicy(config.policy);
     if (lanes.length > 0) {
       return lanes;
     }
-  } catch {
-    // fallback
+  }
+
+  if (config?.defaultProviderId && config.defaultModel) {
+    return [{ providerId: config.defaultProviderId, model: config.defaultModel }];
   }
 
   return [...DEFAULT_CODING_MODELS];
+}
+
+function resolveConfigPolicy(options: { models?: string[] }): Policy | undefined {
+  // Explicit --models wins: use autoMode lanes instead of config policy.
+  if (options.models && options.models.length > 0) {
+    return undefined;
+  }
+  return readModelhitchConfig()?.policy;
 }
 
 export function createMockAuditFindings(codebase: ScannedCodebase): BugFinding[] {
@@ -247,6 +282,15 @@ export function createMockAuditFindings(codebase: ScannedCodebase): BugFinding[]
   return findings;
 }
 
+function formatError(err: unknown): string {
+  if (isModelHitchError(err)) {
+    const status = err.status ? ` HTTP ${err.status}` : '';
+    return `${err.code}${status}: ${err.message}`;
+  }
+  if (err instanceof Error) return err.message;
+  return String(err);
+}
+
 export async function runAuditWithRotation(
   codebase: ScannedCodebase,
   options: AuditRunOptions = {}
@@ -277,9 +321,10 @@ export async function runAuditWithRotation(
     };
   }
 
-  // Real model run via ModelHitch
+  // Real model run via ModelHitch V2
   const resolvedKeys = resolveAvailableKeys();
   const lanes = resolveModelLanes({ models: options.models });
+  const configPolicy = resolveConfigPolicy({ models: options.models });
 
   const keystore = new MemoryKeyStore();
   for (const [provider, key] of Object.entries(resolvedKeys)) {
@@ -306,18 +351,34 @@ export async function runAuditWithRotation(
   const primaryLane = lanes[0] ?? DEFAULT_CODING_MODELS[0]!;
   const fallbackLanes = lanes.slice(1);
 
-  const hitch = new ModelHitch({
-    providers: defaultProviders,
-    keystore,
-    defaultProviderId: primaryLane.providerId,
-    defaultModel: primaryLane.model,
-    autoMode: {
-      lanes: fallbackLanes.map((l) => ({ providerId: l.providerId, model: l.model })),
-      maxAttempts: lanes.length + 1,
-      onFailover: handleFailover,
-    },
-    onFailover: handleFailover,
-  });
+  // Prefer config policy when present (ModelHitch V2 higher-level routing).
+  // Otherwise use autoMode with explicit coding lanes. Never configure both.
+  const hitch = configPolicy
+    ? new ModelHitch({
+        providers: defaultProviders,
+        keystore,
+        defaultProviderId: primaryLane.providerId,
+        defaultModel: primaryLane.model,
+        policy: configPolicy,
+        onFailover: handleFailover,
+      })
+    : new ModelHitch({
+        providers: defaultProviders,
+        keystore,
+        defaultProviderId: primaryLane.providerId,
+        defaultModel: primaryLane.model,
+        autoMode:
+          fallbackLanes.length > 0
+            ? {
+                lanes: fallbackLanes.map((l) => ({
+                  providerId: l.providerId,
+                  model: l.model,
+                })),
+                maxAttempts: lanes.length + 1,
+              }
+            : true,
+        onFailover: handleFailover,
+      });
 
   const prompt = buildAuditPrompt(codebase, {
     modelName: `${primaryLane.providerId}/${primaryLane.model}`,
@@ -327,7 +388,9 @@ export async function runAuditWithRotation(
   let combinedSummary = '';
 
   // Execute primary pass
-  onProgress(`Consulting coding model ${primaryLane.providerId}/${primaryLane.model} (ModelHitch failover rotation armed)...`);
+  onProgress(
+    `Consulting coding model ${primaryLane.providerId}/${primaryLane.model} (ModelHitch V2 failover ${configPolicy ? 'policy' : 'autoMode'} armed)...`
+  );
   modelsUsed.push(`${primaryLane.providerId}/${primaryLane.model}`);
 
   try {
@@ -344,10 +407,11 @@ export async function runAuditWithRotation(
     const parsed = parseModelBugResponse(extractTextContent(result.message.content));
     combinedSummary = parsed.summary;
     allBugs.push(...parsed.bugs);
-  } catch (err: any) {
-    onProgress(`Primary model pass failed: ${err.message}. Checking manual lane rotation...`);
+  } catch (err: unknown) {
+    const errMessage = formatError(err);
+    onProgress(`Primary model pass failed: ${errMessage}. Checking manual lane rotation...`);
 
-    // If autoMode didn't rotate (e.g. invalid key format or non-retried error), walk the remaining lanes manually
+    // If autoMode/policy didn't rotate (e.g. non-retryable error), walk remaining lanes manually
     let succeeded = false;
     for (const lane of fallbackLanes) {
       onProgress(`Rotating to fallback coding model: ${lane.providerId}/${lane.model}...`);
@@ -355,7 +419,7 @@ export async function runAuditWithRotation(
         at: new Date().toISOString(),
         from: primaryLane,
         to: lane,
-        reason: err.message,
+        reason: errMessage,
         attempt: rotationEvents.length + 1,
       };
       rotationEvents.push(rotEvent);
@@ -377,8 +441,8 @@ export async function runAuditWithRotation(
         allBugs.push(...parsed.bugs);
         succeeded = true;
         break;
-      } catch (subErr: any) {
-        onProgress(`Lane ${lane.providerId}/${lane.model} failed: ${subErr.message}`);
+      } catch (subErr: unknown) {
+        onProgress(`Lane ${lane.providerId}/${lane.model} failed: ${formatError(subErr)}`);
       }
     }
 
@@ -387,7 +451,7 @@ export async function runAuditWithRotation(
       modelsUsed.push('mock/local-fallback');
       const fallbackFindings = createMockAuditFindings(codebase);
       allBugs.push(...fallbackFindings);
-      combinedSummary = `Live model rotation exhausted across ${lanes.length} lanes (${err.message}). Evaluated codebase using local Pitstop bug patterns.`;
+      combinedSummary = `Live model rotation exhausted across ${lanes.length} lanes (${errMessage}). Evaluated codebase using local Pitstop bug patterns.`;
     }
   }
 
@@ -431,8 +495,8 @@ export async function runAuditWithRotation(
         }
       }
       combinedSummary += ` Secondary review completed by ${secondLane.providerId}/${secondLane.model}.`;
-    } catch (e: any) {
-      onProgress(`Secondary pass skipped: ${e.message}`);
+    } catch (e: unknown) {
+      onProgress(`Secondary pass skipped: ${formatError(e)}`);
     }
   }
 
