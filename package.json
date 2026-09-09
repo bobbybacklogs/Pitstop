@@ -1,7 +1,7 @@
 {
   "name": "@genoventures-labs/pitstop",
-  "version": "0.1.0",
-  "description": "Scan codebase for obvious and uncaught bugs using Modelhitch model rotation, then output a structured handoff for the next agent.",
+  "version": "0.2.0",
+  "description": "Scan codebase for obvious and uncaught bugs using ModelHitch V2 model rotation, then output a structured handoff for the next agent.",
   "type": "module",
   "main": "./dist/index.js",
   "module": "./dist/index.js",
@@ -61,7 +61,7 @@
   "license": "MIT",
   "dependencies": {
     "commander": "^13.1.0",
-    "modelhitch": "^0.15.0",
+    "modelhitch": "^2.0.0",
     "picocolors": "^1.1.1"
   },
   "devDependencies": {

@@ -7,7 +7,7 @@
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-17b8d4?style=for-the-badge" alt="MIT License" /></a>
   <img src="https://img.shields.io/badge/node-%3E%3D18.0.0-8bd600?style=for-the-badge&logo=node.js&logoColor=white" alt="Node.js version" />
   <img src="https://img.shields.io/badge/TypeScript-ready-3178c6?style=for-the-badge&logo=typescript&logoColor=white" alt="TypeScript" />
-  <a href="https://github.com/genoventures-labs/ModelHitch"><img src="https://img.shields.io/badge/routing-ModelHitch-purple?style=for-the-badge" alt="ModelHitch" /></a>
+  <a href="https://github.com/bobbybacklogs/ModelHitch"><img src="https://img.shields.io/badge/routing-ModelHitch%20V2-8bd600?style=for-the-badge" alt="ModelHitch V2" /></a>
 </p>
 
 <p align="center">
@@ -58,7 +58,7 @@ pitstop ./packages/backend
 pitstop -o ./docs/pitstop-handoff.md
 
 # Rotate through specific coding models
-pitstop -m "opencode-zen/big-pickle,deepseek/deepseek-v4-flash"
+pitstop -m "vercel-ai-gateway/openai/gpt-5.4,deepseek/deepseek-v4-pro"
 
 # Run a multi-model consensus pass
 pitstop --multi
@@ -87,11 +87,13 @@ pitstop --json
 
 ## Model Configuration
 
-Pitstop integrates with ModelHitch for model routing and BYOK credential management:
+Pitstop integrates with [ModelHitch V2](https://github.com/bobbybacklogs/ModelHitch) for model routing and BYOK credential management:
 
-- Local configuration: Reads providers, keys, and policies from `~/.modelhitch/config.json`.
-- Environment variables: Automatically falls back to standard provider environment variables (such as `DEEPSEEK_API_KEY`, `OPENCODE_API_KEY`, `OPENROUTER_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, and `GROQ_API_KEY`).
-- Automatic failover: When a provider reports rate limits (HTTP 429) or service interruption, ModelHitch rotates transparently to the next available lane.
+- Default routing: Prefers **Vercel AI Gateway** (`vercel-ai-gateway/openai/gpt-5.4`) with ModelHitch's built-in failover lineup.
+- Local configuration: Reads providers, keys, and policies from `~/.modelhitch/config.json` (same document used by `modelhitch settings` / the local bridge).
+- Policy mode: When a ModelHitch `policy` is present in that config and you do not pass `--models`, Pitstop uses policy-driven routing.
+- Environment variables: Falls back to provider env vars such as `AI_GATEWAY_API_KEY` (or `VERCEL_OIDC_TOKEN` / `VERCEL_TOKEN`), `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `DEEPSEEK_API_KEY`, `OPENROUTER_API_KEY`, `GEMINI_API_KEY`, `GROQ_API_KEY`, `HF_TOKEN`, `MOONSHOT_API_KEY`, and `ZAI_API_KEY`.
+- Automatic failover: On rate limits (HTTP 429) or provider 5xx/network failures, ModelHitch rotates transparently to the next available lane.
 
 ## Agent Handoff
 

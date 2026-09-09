@@ -12,12 +12,12 @@ describe('handoff', () => {
     scannedAt: '2026-08-31T00:40:00.000Z',
     targetDir: testDir,
     projectName: 'sample-project',
-    modelsUsed: ['opencode-zen/big-pickle', 'deepseek/deepseek-v4-flash'],
+    modelsUsed: ['vercel-ai-gateway/openai/gpt-5.4', 'deepseek/deepseek-v4-pro'],
     rotationEvents: [
       {
         at: '2026-08-31T00:40:05.000Z',
-        from: { providerId: 'opencode-zen', model: 'big-pickle' },
-        to: { providerId: 'deepseek', model: 'deepseek-v4-flash' },
+        from: { providerId: 'vercel-ai-gateway', model: 'openai/gpt-5.4' },
+        to: { providerId: 'deepseek', model: 'deepseek-v4-pro' },
         reason: 'rate-limited HTTP 429: Usage limit exceeded',
         attempt: 1,
       },
@@ -78,8 +78,8 @@ describe('handoff', () => {
     expect(md).toContain('sample-project');
     expect(md).toContain('CRITICAL ATTENTION REQUIRED');
     expect(md).toContain('Model Rotation History');
-    expect(md).toContain('opencode-zen/big-pickle');
-    expect(md).toContain('deepseek/deepseek-v4-flash');
+    expect(md).toContain('vercel-ai-gateway/openai/gpt-5.4');
+    expect(md).toContain('deepseek/deepseek-v4-pro');
     expect(md).toContain('Prompt for the Next Agent');
     expect(md).toContain('- [ ] **[BUG-001]** `[CRITICAL]`');
     expect(md).toContain('- [ ] **[BUG-002]** `[HIGH]`');

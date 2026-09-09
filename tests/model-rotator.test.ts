@@ -17,9 +17,13 @@ describe('model-rotator', () => {
     expect(lane2.providerId).toBe('openrouter');
     expect(lane2.model).toBe('nvidia/nemotron-3.5-lightning:free');
 
-    const lane3 = parseModelLane('big-pickle');
-    expect(lane3.providerId).toBe('opencode-zen');
-    expect(lane3.model).toBe('big-pickle');
+    const lane3 = parseModelLane('openai/gpt-5.4');
+    expect(lane3.providerId).toBe('openai');
+    expect(lane3.model).toBe('gpt-5.4');
+
+    const bare = parseModelLane('gpt-5.4');
+    expect(bare.providerId).toBe('vercel-ai-gateway');
+    expect(bare.model).toBe('gpt-5.4');
   });
 
   it('resolves default and custom model lanes', () => {
@@ -30,6 +34,7 @@ describe('model-rotator', () => {
 
     const defaults = resolveModelLanes();
     expect(defaults.length).toBeGreaterThan(0);
+    expect(defaults[0]?.providerId).toBe('vercel-ai-gateway');
   });
 
   it('detects common pattern bugs in mock mode', () => {
