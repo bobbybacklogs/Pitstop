@@ -7,10 +7,26 @@ import {
   VERCEL_AI_GATEWAY_DEFAULT_MODEL,
   isMaskedSecret,
   isModelHitchError,
+  policyFromConfig,
+  buildCooldownFromConfig,
+  buildCatalogOptions,
+  customLaneProviders,
+  openCodeByokProviders,
+  chatGptPlanProviders,
+  applyCustomLanesPlan,
+  applyOpenCodeByokPlan,
+  applyChatGptPlanPlan,
+  ChatGptPlanAuth,
+  defaultChatGptPlanCredentialsPath,
+  listChatGptPlanAccountModels,
+  readOpenCodeLocalState,
   type FailoverEvent,
   type ContentPart,
   type ModelHitchConfig,
   type Policy,
+  type Provider,
+  type Usage,
+  type OpenCodeLocalState,
 } from 'modelhitch';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -28,6 +44,8 @@ export interface AuditRunOptions {
   mock?: boolean;
   multi?: boolean;
   verbose?: boolean;
+  /** Override the provider registry (useful for tests / custom integrations). */
+  providers?: Provider[];
   onRotation?: (event: RotationEvent) => void;
   onProgress?: (message: string) => void;
 }
@@ -37,22 +55,6 @@ export const DEFAULT_CODING_MODELS: ModelLane[] = [
   { providerId: 'vercel-ai-gateway', model: VERCEL_AI_GATEWAY_DEFAULT_MODEL },
   ...DEFAULT_FAILOVER_LANES,
 ];
-
-const ENV_KEY_MAP: Record<string, string | string[]> = {
-  'vercel-ai-gateway': ['AI_GATEWAY_API_KEY', 'VERCEL_OIDC_TOKEN', 'VERCEL_TOKEN'],
-  deepseek: 'DEEPSEEK_API_KEY',
-  openrouter: 'OPENROUTER_API_KEY',
-  openai: 'OPENAI_API_KEY',
-  anthropic: 'ANTHROPIC_API_KEY',
-  groq: 'GROQ_API_KEY',
-  gemini: 'GEMINI_API_KEY',
-  together: 'TOGETHER_API_KEY',
-  xai: 'XAI_API_KEY',
-  mistral: 'MISTRAL_API_KEY',
-  huggingface: ['HF_TOKEN', 'HUGGINGFACE_API_KEY'],
-  moonshot: 'MOONSHOT_API_KEY',
-  zai: 'ZAI_API_KEY',
-};
 
 export function getModelhitchConfigPath(): string {
   const home = process.env.MODELHITCH_HOME || join(homedir(), '.modelhitch');
@@ -83,33 +85,18 @@ function readModelhitchConfig(): ModelHitchConfig | null {
   }
 }
 
-function firstEnvValue(envVars: string | string[]): string | undefined {
-  const names = Array.isArray(envVars) ? envVars : [envVars];
-  for (const name of names) {
-    const value = process.env[name];
-    if (value) return value;
-  }
-  return undefined;
-}
-
 export function resolveAvailableKeys(): Record<string, string> {
   const keys: Record<string, string> = {};
 
-  // 1. Read from ~/.modelhitch/config.json if present
+  // Read from ~/.modelhitch/config.json if present. The SDK itself resolves
+  // provider env vars (explicit > keystore > env fallback), so we only need to
+  // seed the keystore with whatever real (non-masked) keys the config holds.
   const config = readModelhitchConfig();
   if (config?.keys) {
     for (const [provider, key] of Object.entries(config.keys)) {
       if (key && typeof key === 'string' && !isMaskedSecret(key)) {
         keys[provider] = key;
       }
-    }
-  }
-
-  // 2. Read from process.env (overrides file keys)
-  for (const [provider, envVar] of Object.entries(ENV_KEY_MAP)) {
-    const envVal = firstEnvValue(envVar);
-    if (envVal) {
-      keys[provider] = envVal;
     }
   }
 
@@ -130,9 +117,64 @@ export function parseModelLane(raw: string): ModelLane {
   };
 }
 
-function lanesFromPolicy(policy: Policy): ModelLane[] {
+function safeReadOpenCodeState(): OpenCodeLocalState | undefined {
+  try {
+    return readOpenCodeLocalState();
+  } catch {
+    return undefined;
+  }
+}
+
+function composePlan(config: ModelHitchConfig | null, accountModels: string[] = []) {
+  const basePolicy = config ? policyFromConfig(config) : undefined;
+  let plan = applyOpenCodeByokPlan({
+    config: config ?? undefined,
+    policy: basePolicy,
+    defaultProviderId: config?.defaultProviderId,
+    defaultModel: config?.defaultModel,
+    state: config?.opencodeByok?.syncFromOpenCode ? safeReadOpenCodeState() : undefined,
+  });
+  plan = applyCustomLanesPlan({
+    config: config ?? undefined,
+    policy: plan.policy,
+    defaultProviderId: plan.defaultProviderId,
+    defaultModel: plan.defaultModel,
+  });
+  const composed = applyChatGptPlanPlan({
+    config: config ?? undefined,
+    policy: plan.policy,
+    defaultProviderId: plan.defaultProviderId,
+    defaultModel: plan.defaultModel,
+    accountModels,
+  });
+  return {
+    policy: composed.policy,
+    defaultProviderId: composed.defaultProviderId,
+    defaultModel: composed.defaultModel,
+  };
+}
+
+function buildProviders(config: ModelHitchConfig | null, accountModels: string[] = []): Provider[] {
+  const providers = [...defaultProviders];
+  const merge = (ps: Provider[]) => {
+    for (const p of ps) {
+      if (!providers.some((x) => x.id === p.id)) providers.push(p);
+    }
+  };
+  merge(openCodeByokProviders(config ?? undefined));
+  merge(customLaneProviders(config ?? undefined));
+  try {
+    const auth = new ChatGptPlanAuth({ path: defaultChatGptPlanCredentialsPath() });
+    merge(chatGptPlanProviders(config ?? undefined, { tokens: auth, accountModels }));
+  } catch {
+    // ignore — lane just won't be routable
+  }
+  return providers;
+}
+
+function lanesFromPolicy(policy: Policy, providers: Provider[] = defaultProviders): ModelLane[] {
   const lanes: ModelLane[] = [];
-  const providersById = new Map(defaultProviders.map((p) => [p.id, p] as const));
+  const providersById = new Map(providers.map((p) => [p.id, p] as const));
   const pushEntry = (entry: { providerId: string; models?: string[] }) => {
     const provider = providersById.get(entry.providerId);
     const models =
@@ -155,26 +197,20 @@ export function resolveModelLanes(options: { models?: string[] } = {}): ModelLan
   }
 
   const config = readModelhitchConfig();
-  if (config?.policy) {
-    const lanes = lanesFromPolicy(config.policy);
+  const { policy, defaultProviderId, defaultModel } = composePlan(config);
+  if (policy) {
+    const providers = buildProviders(config);
+    const lanes = lanesFromPolicy(policy, providers);
     if (lanes.length > 0) {
       return lanes;
     }
   }
 
-  if (config?.defaultProviderId && config.defaultModel) {
-    return [{ providerId: config.defaultProviderId, model: config.defaultModel }];
+  if (defaultProviderId && defaultModel) {
+    return [{ providerId: defaultProviderId, model: defaultModel }];
   }
 
   return [...DEFAULT_CODING_MODELS];
-}
-
-function resolveConfigPolicy(options: { models?: string[] }): Policy | undefined {
-  // Explicit --models wins: use autoMode lanes instead of config policy.
-  if (options.models && options.models.length > 0) {
-    return undefined;
-  }
-  return readModelhitchConfig()?.policy;
 }
 
 export function createMockAuditFindings(codebase: ScannedCodebase): BugFinding[] {
@@ -285,7 +321,9 @@ export function createMockAuditFindings(codebase: ScannedCodebase): BugFinding[]
 function formatError(err: unknown): string {
   if (isModelHitchError(err)) {
     const status = err.status ? ` HTTP ${err.status}` : '';
-    return `${err.code}${status}: ${err.message}`;
+    const prov = err.providerId ? ` [${err.providerId}]` : '';
+    const retry = err.retryAfterMs ? ` (retry after ${Math.ceil(err.retryAfterMs / 1000)}s)` : '';
+    return `${err.code}${status}${prov}: ${err.message}${retry}`;
   }
   if (err instanceof Error) return err.message;
   return String(err);
@@ -322,14 +360,45 @@ export async function runAuditWithRotation(
   }
 
   // Real model run via ModelHitch V2
-  const resolvedKeys = resolveAvailableKeys();
-  const lanes = resolveModelLanes({ models: options.models });
-  const configPolicy = resolveConfigPolicy({ models: options.models });
+  // When a provider registry is injected (e.g. tests), stay fully isolated from
+  // the user's ~/.modelhitch config so policy validation can't trip over
+  // providers that aren't in the injected set.
+  const config = options.providers ? null : readModelhitchConfig();
+  const resolvedKeys = options.providers ? {} : resolveAvailableKeys();
 
   const keystore = new MemoryKeyStore();
   for (const [provider, key] of Object.entries(resolvedKeys)) {
     await keystore.set(provider, key);
   }
+
+  // ChatGPT plan account models (best-effort; lane won't serve if unavailable).
+  let chatgptAccountModels: string[] = [];
+  if (config?.chatgptPlan?.enabled) {
+    try {
+      const auth = new ChatGptPlanAuth({ path: defaultChatGptPlanCredentialsPath() });
+      chatgptAccountModels = await listChatGptPlanAccountModels({ tokens: auth });
+    } catch {
+      chatgptAccountModels = [];
+    }
+  }
+
+  const { policy: finalPolicy, defaultProviderId: composedDefaultProviderId, defaultModel: composedDefaultModel } =
+    composePlan(config, chatgptAccountModels);
+  const providers = options.providers ?? buildProviders(config, chatgptAccountModels);
+
+  const lanes = (() => {
+    if (options.models && options.models.length > 0) {
+      return options.models.map(parseModelLane);
+    }
+    if (finalPolicy) {
+      const resolved = lanesFromPolicy(finalPolicy, providers);
+      if (resolved.length > 0) return resolved;
+    }
+    if (composedDefaultProviderId && composedDefaultModel) {
+      return [{ providerId: composedDefaultProviderId, model: composedDefaultModel }];
+    }
+    return [...DEFAULT_CODING_MODELS];
+  })();
 
   const handleFailover = (event: FailoverEvent) => {
     const rotEvent: RotationEvent = {
@@ -351,34 +420,32 @@ export async function runAuditWithRotation(
   const primaryLane = lanes[0] ?? DEFAULT_CODING_MODELS[0]!;
   const fallbackLanes = lanes.slice(1);
 
-  // Prefer config policy when present (ModelHitch V2 higher-level routing).
-  // Otherwise use autoMode with explicit coding lanes. Never configure both.
-  const hitch = configPolicy
-    ? new ModelHitch({
-        providers: defaultProviders,
-        keystore,
-        defaultProviderId: primaryLane.providerId,
-        defaultModel: primaryLane.model,
-        policy: configPolicy,
-        onFailover: handleFailover,
-      })
-    : new ModelHitch({
-        providers: defaultProviders,
-        keystore,
-        defaultProviderId: primaryLane.providerId,
-        defaultModel: primaryLane.model,
-        autoMode:
-          fallbackLanes.length > 0
-            ? {
-                lanes: fallbackLanes.map((l) => ({
-                  providerId: l.providerId,
-                  model: l.model,
-                })),
-                maxAttempts: lanes.length + 1,
-              }
-            : true,
-        onFailover: handleFailover,
-      });
+  const passProviders = options.providers ? providers : (providers.length > defaultProviders.length ? providers : undefined);
+
+  const hitch = await ModelHitch.create({
+    providers: passProviders,
+    keystore,
+    defaultProviderId: primaryLane.providerId,
+    defaultModel: primaryLane.model,
+    ...(finalPolicy
+      ? { policy: finalPolicy }
+      : {
+          autoMode:
+            fallbackLanes.length > 0
+              ? {
+                  lanes: fallbackLanes.map((l) => ({
+                    providerId: l.providerId,
+                    model: l.model,
+                  })),
+                  maxAttempts: lanes.length + 1,
+                }
+              : true,
+        }),
+    onFailover: handleFailover,
+    intents: config?.intents,
+    cooldown: buildCooldownFromConfig({ cooldown: config?.cooldown }),
+    ...buildCatalogOptions({ catalog: config?.catalog }) ? { catalog: buildCatalogOptions({ catalog: config?.catalog }) } : {},
+  });
 
   const prompt = buildAuditPrompt(codebase, {
     modelName: `${primaryLane.providerId}/${primaryLane.model}`,
@@ -386,12 +453,29 @@ export async function runAuditWithRotation(
 
   const allBugs: BugFinding[] = [];
   let combinedSummary = '';
+  let truncated = false;
+  const laneUsage: Array<{ model: string; inputTokens: number; outputTokens: number; totalTokens: number }> = [];
+  const addUsage = (lane: string, usage?: Usage) => {
+    if (!usage) return;
+    laneUsage.push({
+      model: lane,
+      inputTokens: usage.inputTokens ?? 0,
+      outputTokens: usage.outputTokens ?? 0,
+      totalTokens: usage.totalTokens ?? ((usage.inputTokens ?? 0) + (usage.outputTokens ?? 0)),
+    });
+  };
+
+  let primaryServingLane: ModelLane | null = null;
+  const primaryFailedKeys = new Set<string>();
+  const laneKey = (l: ModelLane) => `${l.providerId}/${l.model}`;
 
   // Execute primary pass
   onProgress(
-    `Consulting coding model ${primaryLane.providerId}/${primaryLane.model} (ModelHitch V2 failover ${configPolicy ? 'policy' : 'autoMode'} armed)...`
+    `Consulting coding model ${primaryLane.providerId}/${primaryLane.model} (ModelHitch ${finalPolicy ? 'policy' : 'autoMode'} armed)...`
   );
   modelsUsed.push(`${primaryLane.providerId}/${primaryLane.model}`);
+
+  const rotMark = rotationEvents.length;
 
   try {
     const result = await hitch.chat({
@@ -403,6 +487,15 @@ export async function runAuditWithRotation(
       ],
       temperature: 0.1,
     });
+
+    let serving = primaryLane;
+    for (let i = rotMark; i < rotationEvents.length; i++) {
+      const ev = rotationEvents[i]!;
+      serving = { providerId: ev.to.providerId, model: ev.to.model };
+    }
+    primaryServingLane = serving;
+    addUsage(`${serving.providerId}/${serving.model}`, result.usage);
+    if (result.finishReason === 'length') truncated = true;
 
     const parsed = parseModelBugResponse(extractTextContent(result.message.content));
     combinedSummary = parsed.summary;
@@ -423,6 +516,12 @@ export async function runAuditWithRotation(
         attempt: rotationEvents.length + 1,
       };
       rotationEvents.push(rotEvent);
+      if (options.onRotation) {
+        options.onRotation(rotEvent);
+      }
+      onProgress(
+        `[ModelHitch Rotation] Switched from ${primaryLane.providerId}/${primaryLane.model} -> ${lane.providerId}/${lane.model} (${rotEvent.reason})`
+      );
       modelsUsed.push(`${lane.providerId}/${lane.model}`);
 
       try {
@@ -436,15 +535,21 @@ export async function runAuditWithRotation(
           temperature: 0.1,
         });
 
+        addUsage(`${lane.providerId}/${lane.model}`, result.usage);
+        if (result.finishReason === 'length') truncated = true;
         const parsed = parseModelBugResponse(extractTextContent(result.message.content));
         combinedSummary = parsed.summary;
         allBugs.push(...parsed.bugs);
+        primaryServingLane = lane;
         succeeded = true;
         break;
       } catch (subErr: unknown) {
         onProgress(`Lane ${lane.providerId}/${lane.model} failed: ${formatError(subErr)}`);
+        primaryFailedKeys.add(laneKey(lane));
       }
     }
+
+    primaryFailedKeys.add(laneKey(primaryLane));
 
     if (!succeeded) {
       onProgress('All live models failed or exhausted. Falling back to local pattern hunter...');
@@ -455,48 +560,61 @@ export async function runAuditWithRotation(
     }
   }
 
-  // Multi-pass rotation if requested
+  // Multi-pass rotation if requested: run the security-focused pass on every
+  // remaining lane (not just the first), aggregating + deduplicating findings.
   if (options.multi && lanes.length > 1) {
-    const secondLane = lanes[1]!;
-    onProgress(`Running secondary rotation pass with ${secondLane.providerId}/${secondLane.model}...`);
-    if (!modelsUsed.includes(`${secondLane.providerId}/${secondLane.model}`)) {
-      modelsUsed.push(`${secondLane.providerId}/${secondLane.model}`);
-    }
+    const skipKeys = new Set(primaryFailedKeys);
+    if (primaryServingLane) skipKeys.add(laneKey(primaryServingLane));
+    const multiLanes = lanes.filter((l) => !skipKeys.has(laneKey(l)));
 
-    try {
-      const secondaryPrompt = buildAuditPrompt(codebase, {
-        focus: 'Focus specifically on edge-case concurrency traps, security holes, and unhandled promise rejections.',
-        modelName: `${secondLane.providerId}/${secondLane.model}`,
-      });
+    if (multiLanes.length === 0) {
+      onProgress('Multi-pass skipped: all lanes exhausted in primary pass.');
+    } else {
+      for (const secondLane of multiLanes) {
+        onProgress(`Running secondary rotation pass with ${secondLane.providerId}/${secondLane.model}...`);
+        if (!modelsUsed.includes(`${secondLane.providerId}/${secondLane.model}`)) {
+          modelsUsed.push(`${secondLane.providerId}/${secondLane.model}`);
+        }
 
-      const secondaryResult = await hitch.chat({
-        provider: secondLane.providerId,
-        model: secondLane.model,
-        messages: [
-          { role: 'system', content: secondaryPrompt.system },
-          { role: 'user', content: secondaryPrompt.user },
-        ],
-        temperature: 0.2,
-      });
+        try {
+          const secondaryPrompt = buildAuditPrompt(codebase, {
+            focus: 'Focus specifically on edge-case concurrency traps, security holes, and unhandled promise rejections.',
+            modelName: `${secondLane.providerId}/${secondLane.model}`,
+          });
 
-      const secondParsed = parseModelBugResponse(extractTextContent(secondaryResult.message.content));
-      // Deduplicate bugs by file and lineStart
-      for (const bug of secondParsed.bugs) {
-        const isDuplicate = allBugs.some(
-          (existing) =>
-            existing.file === bug.file &&
-            existing.lineStart &&
-            bug.lineStart &&
-            Math.abs(existing.lineStart - bug.lineStart) <= 2
-        );
-        if (!isDuplicate) {
-          bug.id = `BUG-${String(allBugs.length + 1).padStart(3, '0')}`;
-          allBugs.push(bug);
+          const secondaryResult = await hitch.chat({
+            provider: secondLane.providerId,
+            model: secondLane.model,
+            messages: [
+              { role: 'system', content: secondaryPrompt.system },
+              { role: 'user', content: secondaryPrompt.user },
+            ],
+            temperature: 0.2,
+          });
+
+          addUsage(`${secondLane.providerId}/${secondLane.model}`, secondaryResult.usage);
+          if (secondaryResult.finishReason === 'length') truncated = true;
+
+          const secondParsed = parseModelBugResponse(extractTextContent(secondaryResult.message.content));
+          // Deduplicate bugs by file and lineStart
+          for (const bug of secondParsed.bugs) {
+            const isDuplicate = allBugs.some(
+              (existing) =>
+                existing.file === bug.file &&
+                existing.lineStart &&
+                bug.lineStart &&
+                Math.abs(existing.lineStart - bug.lineStart) <= 2
+            );
+            if (!isDuplicate) {
+              bug.id = `BUG-${String(allBugs.length + 1).padStart(3, '0')}`;
+              allBugs.push(bug);
+            }
+          }
+          combinedSummary += ` Secondary review completed by ${secondLane.providerId}/${secondLane.model}.`;
+        } catch (e: unknown) {
+          onProgress(`Secondary pass skipped: ${formatError(e)}`);
         }
       }
-      combinedSummary += ` Secondary review completed by ${secondLane.providerId}/${secondLane.model}.`;
-    } catch (e: unknown) {
-      onProgress(`Secondary pass skipped: ${formatError(e)}`);
     }
   }
 
@@ -504,6 +622,22 @@ export async function runAuditWithRotation(
   allBugs.forEach((bug, index) => {
     bug.id = `BUG-${String(index + 1).padStart(3, '0')}`;
   });
+
+  const totalUsage = laneUsage.reduce(
+    (acc, u) => ({
+      inputTokens: acc.inputTokens + u.inputTokens,
+      outputTokens: acc.outputTokens + u.outputTokens,
+      totalTokens: acc.totalTokens + u.totalTokens,
+    }),
+    { inputTokens: 0, outputTokens: 0, totalTokens: 0 }
+  );
+
+  if (truncated) {
+    onProgress('Warning: at least one model response was truncated (finishReason: length).');
+    combinedSummary = combinedSummary
+      ? `${combinedSummary} Warning: at least one model response was truncated.`
+      : 'Warning: at least one model response was truncated.';
+  }
 
   return {
     scannedAt,
@@ -518,5 +652,14 @@ export async function runAuditWithRotation(
       languages: codebase.languages,
     },
     summary: combinedSummary || `Audit complete across ${codebase.totalFiles} files.`,
+    usage: laneUsage.length > 0
+      ? {
+          inputTokens: totalUsage.inputTokens,
+          outputTokens: totalUsage.outputTokens,
+          totalTokens: totalUsage.totalTokens,
+          byModel: laneUsage,
+        }
+      : undefined,
+    truncated: truncated || undefined,
   };
 }

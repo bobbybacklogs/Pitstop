@@ -80,6 +80,20 @@ export interface AuditResult {
   };
   summary: string;
   rawModelResponse?: string;
+  /** Aggregated token usage across all model passes (when the SDK reports it). */
+  usage?: {
+    inputTokens: number;
+    outputTokens: number;
+    totalTokens: number;
+    byModel: Array<{
+      model: string;
+      inputTokens: number;
+      outputTokens: number;
+      totalTokens: number;
+    }>;
+  };
+  /** True when at least one model response was truncated (finishReason: length). */
+  truncated?: boolean;
 }
 
 export interface HandoffOptions {

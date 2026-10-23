@@ -3,7 +3,7 @@ import { dirname, resolve } from 'node:path';
 import type { AuditResult, BugFinding, HandoffOptions, HandoffResult } from './types.js';
 
 export function formatHandoffMarkdown(result: AuditResult): string {
-  const { scannedAt, targetDir, projectName, modelsUsed, rotationEvents, bugs, codebaseStats, summary } = result;
+  const { scannedAt, targetDir, projectName, modelsUsed, rotationEvents, bugs, codebaseStats, summary, usage, truncated } = result;
 
   const criticalBugs = bugs.filter((b) => b.severity === 'CRITICAL');
   const highBugs = bugs.filter((b) => b.severity === 'HIGH');
@@ -43,6 +43,12 @@ export function formatHandoffMarkdown(result: AuditResult): string {
   lines.push(`| **High Severity** | **${highBugs.length}** |`);
   lines.push(`| **Medium Severity** | **${mediumBugs.length}** |`);
   lines.push(`| **Low Severity** | **${lowBugs.length}** |`);
+  if (usage) {
+    lines.push(`| **Tokens Used** | ${usage.totalTokens.toLocaleString()} (in ${usage.inputTokens.toLocaleString()} / out ${usage.outputTokens.toLocaleString()}) |`);
+  }
+  if (truncated) {
+    lines.push(`| **Truncated Responses** | Yes (at least one model response hit length limit) |`);
+  }
   lines.push('');
 
   if (rotationEvents.length > 0) {
@@ -51,6 +57,18 @@ export function formatHandoffMarkdown(result: AuditResult): string {
     for (const ev of rotationEvents) {
       lines.push(`- **Attempt ${ev.attempt}:** Switched from \`${ev.from.providerId}/${ev.from.model}\` to \`${ev.to.providerId}/${ev.to.model}\` — *${ev.reason}* (${ev.at})`);
     }
+    lines.push('');
+  }
+
+  if (usage && usage.byModel.length > 0) {
+    lines.push('### 📊 Token Usage by Model');
+    lines.push('');
+    lines.push('| Model | Input | Output | Total |');
+    lines.push('|---|---|---|---|');
+    for (const u of usage.byModel) {
+      lines.push(`| \`${u.model}\` | ${u.inputTokens.toLocaleString()} | ${u.outputTokens.toLocaleString()} | ${u.totalTokens.toLocaleString()} |`);
+    }
+    lines.push(`| **Total** | **${usage.inputTokens.toLocaleString()}** | **${usage.outputTokens.toLocaleString()}** | **${usage.totalTokens.toLocaleString()}** |`);
     lines.push('');
   }
 
@@ -137,12 +155,14 @@ export function formatHandoffMarkdown(result: AuditResult): string {
   lines.push('```json');
   lines.push(JSON.stringify(
     {
-      pitstopVersion: '0.1.0',
+      pitstopVersion: '0.2.0',
       scannedAt,
       targetDir,
       projectName,
       modelsUsed,
       stats: codebaseStats,
+      usage,
+      truncated,
       bugs,
     },
     null,
@@ -184,12 +204,14 @@ export function saveHandoffReport(
   if (options.includeJson) {
     jsonPath = targetPath.replace(/\.md$/i, '.json');
     const jsonData = {
-      pitstopVersion: '0.1.0',
+      pitstopVersion: '0.2.0',
       scannedAt: result.scannedAt,
       targetDir: result.targetDir,
       projectName: result.projectName,
       modelsUsed: result.modelsUsed,
       stats: result.codebaseStats,
+      usage: result.usage,
+      truncated: result.truncated,
       bugs: result.bugs,
     };
     writeFileSync(jsonPath, JSON.stringify(jsonData, null, 2), 'utf8');

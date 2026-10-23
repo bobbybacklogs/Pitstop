@@ -90,9 +90,11 @@ pitstop --json
 Pitstop integrates with [ModelHitch V2](https://github.com/bobbybacklogs/ModelHitch) for model routing and BYOK credential management:
 
 - Default routing: Prefers **Vercel AI Gateway** (`vercel-ai-gateway/openai/gpt-5.4`) with ModelHitch's built-in failover lineup.
-- Local configuration: Reads providers, keys, and policies from `~/.modelhitch/config.json` (same document used by `modelhitch settings` / the local bridge).
-- Policy mode: When a ModelHitch `policy` is present in that config and you do not pass `--models`, Pitstop uses policy-driven routing.
+- Local configuration: Reads providers, keys, and policies from `~/.modelhitch/config.json` (same document used by `modelhitch settings` / the local bridge). Custom BYOK lanes (`custom-<slug>`), OpenCode Console BYOK lanes (`opencode-byok-<slug>`), and the ChatGPT plan lane (`chatgpt-plan`) configured there are honored automatically, along with any intent profiles.
+- Policy mode: When a ModelHitch `policy` is present in that config and you do not pass `--models`, Pitstop uses policy-driven routing with lane cooldowns, 402/429/5xx failover, and capability-aware skipping.
 - Environment variables: Falls back to provider env vars such as `AI_GATEWAY_API_KEY` (or `VERCEL_OIDC_TOKEN` / `VERCEL_TOKEN`), `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `DEEPSEEK_API_KEY`, `OPENROUTER_API_KEY`, `GEMINI_API_KEY`, `GROQ_API_KEY`, `HF_TOKEN`, `MOONSHOT_API_KEY`, and `ZAI_API_KEY`.
+- `--multi`: Runs the security/concurrency-focused pass on every remaining configured lane (not just the second) and aggregates + deduplicates findings.
+- Report: The handoff now includes per-model token usage and flags truncated (`finishReason: length`) responses.
 - Automatic failover: On rate limits (HTTP 429) or provider 5xx/network failures, ModelHitch rotates transparently to the next available lane.
 
 ## Agent Handoff

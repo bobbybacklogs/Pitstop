@@ -61,7 +61,7 @@
   "license": "MIT",
   "dependencies": {
     "commander": "^13.1.0",
-    "modelhitch": "^2.0.0",
+    "modelhitch": "^2.10.0",
     "picocolors": "^1.1.1"
   },
   "devDependencies": {
