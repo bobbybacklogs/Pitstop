@@ -13,7 +13,7 @@ const program = new Command();
 program
   .name('pitstop')
   .description('One job: scan current directory, rotate coding models via ModelHitch, hunt for obvious and uncaught bugs, and generate an agent handoff report.')
-  .version('0.2.0')
+  .version('0.3.0')
   .argument('[directory]', 'Target directory to scan', '.')
   .option('-o, --output <path>', 'Custom path to save the agent handoff markdown report')
   .option('-m, --models <models>', 'Comma-separated provider/model targets (e.g. "vercel-ai-gateway/openai/gpt-5.4,deepseek/deepseek-v4-pro")')
@@ -32,7 +32,7 @@ program
 
       console.log(pc.cyan(PITSTOP_ASCII_LOGO));
       console.log(pc.bold(pc.white(` ${PITSTOP_BANNER}`)));
-      console.log(pc.dim(` Version 0.2.0 | ModelHitch V2 BYOK Model Rotation\n`));
+      console.log(pc.dim(` Version 0.3.0 | ModelHitch V2 BYOK Model Rotation\n`));
 
       // 1. Scan codebase
       console.log(pc.bold(pc.blue(`[1/4] 🔍 Scanning codebase...`)));

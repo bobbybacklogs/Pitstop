@@ -155,7 +155,7 @@ export function formatHandoffMarkdown(result: AuditResult): string {
   lines.push('```json');
   lines.push(JSON.stringify(
     {
-      pitstopVersion: '0.2.0',
+      pitstopVersion: '0.3.0',
       scannedAt,
       targetDir,
       projectName,
@@ -204,7 +204,7 @@ export function saveHandoffReport(
   if (options.includeJson) {
     jsonPath = targetPath.replace(/\.md$/i, '.json');
     const jsonData = {
-      pitstopVersion: '0.2.0',
+      pitstopVersion: '0.3.0',
       scannedAt: result.scannedAt,
       targetDir: result.targetDir,
       projectName: result.projectName,

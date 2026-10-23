@@ -1,6 +1,6 @@
 {
   "name": "@genoventures-labs/pitstop",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Scan codebase for obvious and uncaught bugs using ModelHitch V2 model rotation, then output a structured handoff for the next agent.",
   "type": "module",
   "main": "./dist/index.js",
